@@ -1,51 +1,83 @@
-# Wi-Fi Analyzer for macOS
+# Wi-Fi Analyzer
 
-주변 Wi-Fi AP의 채널 점유와 신호 세기를 확인하는 간단한 macOS용 도구입니다.
+주변 Wi-Fi AP의 채널 점유와 신호 세기를 보여주는 데스크톱 도구입니다. 하나의 GUI/CLI를
+공유하고, 스캔 구현만 운영체제별 모듈로 분리했습니다.
 
-## 구성
+## 플랫폼 구조
 
-- `wifi_gui.py`: 2.4 GHz·5 GHz 스펙트럼, AP 목록, 선택 AP의 신호 추이를 보여주는 GUI
-- `wifi_scan.py`: 터미널에서 채널별 밀집도와 현재 연결 AP에 겹치는 네트워크를 보여주는 CLI
+| 플랫폼 | 스캔 모듈 | 데이터 소스 | 실행 도구 |
+| --- | --- | --- | --- |
+| macOS | `platforms/macos.py` | CoreWLAN, `system_profiler` 대체 | `run_gui.command` |
+| Ubuntu/Linux | `platforms/linux.py` | NetworkManager `nmcli` | `run_gui.sh` |
+| Windows | `platforms/windows.py` | `netsh wlan` | `run_gui.bat` |
 
-## 설치
+공통 모델, 채널 점유 계산, AP 행 식별자는 `wifi_core.py`에 있고, 실행 시
+`wifi_platform.py`가 OS를 감지해 알맞은 수집기를 선택합니다. GUI와 CLI를 바꿀 때는
+플랫폼 코드를 건드릴 필요가 없습니다. OS별 수집기 변경은 해당 `platforms/` 파일에만
+반영합니다.
+
+## Ubuntu 설치와 실행
+
+Ubuntu Desktop에서 NetworkManager와 Tk를 설치합니다.
 
 ```bash
+sudo apt update
+sudo apt install network-manager python3-tk
 python3 -m pip install -r requirements.txt
+chmod +x run_gui.sh
+./run_gui.sh
 ```
 
-`pyobjc-framework-CoreWLAN`을 설치하면 CoreWLAN으로 스캔해 BSSID까지 표시합니다.
-설치하지 않아도 macOS 기본 `system_profiler` 경로로 동작하지만, macOS 버전에 따라
-SSID/BSSID가 가려질 수 있습니다.
-
-## 실행
+터미널 모니터는 다음과 같이 실행합니다.
 
 ```bash
-# GUI — 처음에는 이 명령으로 열어 위치 권한을 허용하세요.
-open WiFiAnalyzer.app
-
-# 터미널 모니터 (기본: 5초 간격)
 python3 wifi_scan.py
-
-# 한 번만 스캔
 python3 wifi_scan.py --once
 ```
 
-## 위치 권한
+`nmcli`는 스캔할 네트워크 인터페이스에 NetworkManager가 연결되어 있어야 합니다.
+Linux와 Windows가 제공하는 스캔 정보에는 채널 폭과 noise가 없을 수 있으므로, 해당 경우
+분석기는 20 MHz 폭으로 표시하고 SNR은 비워 둡니다.
 
-macOS 14 이상에서는 Wi-Fi 목록이 위치 정보로 취급됩니다. 처음 실행할 때 뜨는
-**WiFi Analyzer의 위치 접근** 요청을 허용하세요. 요청을 놓쳤거나 거부했다면
-**시스템 설정 → 개인정보 보호 및 보안 → 위치 서비스 → WiFi Analyzer**에서 허용한 뒤
-다시 실행하세요.
+기본 GUI는 **진단 AP만** 표시합니다. 현재 연결 AP와 실제 주파수가 겹치면서 현재 신호보다
+15 dB 이내인 AP만 목록과 그래프에 남습니다. 숨김 SSID는 기본적으로 요약 수치에만 반영되고,
+필요할 때만 **숨김 SSID** 토글로 펼칠 수 있습니다. `C/I`는 현재 연결 신호와 겹치는 AP의
+합산 신호를 비교한 추정치이며, `높음` 또는 `심각`은 간섭 가능성을 뜻합니다. 실제 속도 문제는
+인터넷 회선, AP 부하, 클라이언트 상태도 함께 확인해야 합니다.
 
-`(숨김 SSID)`는 공유기가 네트워크 이름을 브로드캐스트하지 않는 경우이고, `미제공`은
-macOS가 해당 항목의 BSSID를 스캔 API에 제공하지 않은 경우입니다.
+## macOS 설치와 실행
 
-## 앱 번들 다시 만들기
+```bash
+python3 -m pip install -r requirements.txt
+open WiFiAnalyzer.app
+```
 
-Python 또는 의존성을 바꾼 뒤에는 아래 명령으로 독립 실행형 앱을 다시 만들 수 있습니다.
+`pyobjc-framework-CoreWLAN`이 설치되면 BSSID를 포함한 CoreWLAN 스캔을 사용합니다.
+없으면 `system_profiler` 대체 경로를 사용합니다. macOS 14 이상에서는 Wi-Fi 목록을 위해
+WiFi Analyzer의 위치 접근을 허용해야 할 수 있습니다.
+
+macOS 앱 번들은 기존과 같이 만들 수 있습니다.
 
 ```bash
 python3 -m pip install py2app
 python3 setup.py py2app
 open "dist/WiFi Analyzer.app"
+```
+
+## Windows 설치와 실행
+
+Python 3와 Tk가 포함된 Windows 환경에서 다음을 실행합니다.
+
+```bat
+python -m pip install -r requirements.txt
+run_gui.bat
+```
+
+Windows는 기본 제공 `netsh wlan`을 사용합니다. WLAN AutoConfig 서비스와 무선 어댑터가
+활성화되어 있어야 합니다.
+
+## 검증
+
+```bash
+python3 -m unittest discover -s tests -v
 ```
