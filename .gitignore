@@ -1,0 +1,42 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Packaging / py2app output
+/build/
+/dist/
+*.egg-info/
+.eggs/
+/WiFiAnalyzer.app/
+/WiFiAnalyzer.previous.app/
+/WiFiAnalyzer.launcher.app/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# IDE-local files
+.idea/
+.vscode/
