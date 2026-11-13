@@ -357,7 +357,9 @@ def diagnose_connection(current: Any, observations: Sequence[Any],
         severity = "critical" if strongest >= -60 else "warning"
         findings.append(Finding("adjacent_overlap", "강한 부분 겹침 신호", severity,
                                 f"부분 겹침 BSS {len(adjacent)}개 · 최강 {strongest:.0f} dBm",
-                                "2.4GHz는 20MHz와 1/6/11 채널 계획을 우선 검토하세요."))
+                                "2.4GHz는 20MHz와 1/6/11 채널 계획을 우선 검토하세요."
+                                if _band(current) == 2 else
+                                f"{_band(current)}GHz에서 다른 채널 블록이나 더 좁은 채널 폭을 검토하세요."))
 
     if _band(current) == 2 and _width(current) > 20:
         findings.append(Finding("wide_24ghz", "2.4GHz에서 넓은 채널 사용", "warning",

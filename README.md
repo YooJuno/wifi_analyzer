@@ -128,10 +128,12 @@ git push origin v1.0.0
 생성 파일:
 
 - Ubuntu x86_64: `WiFiAnalyzer-linux-x86_64.tar.gz`
-- macOS arm64: `WiFiAnalyzer-macOS-arm64.zip`
+- macOS Apple Silicon·Intel: `WiFiAnalyzer-macOS-universal2.zip`
 - Windows x86_64: `WiFiAnalyzer-Windows-x86_64.zip`
 
 각 압축 파일과 함께 SHA-256 파일(`.sha256`)을 제공합니다. 수동 실행의 버전은 `X.Y.Z`, 릴리스 태그는 `vX.Y.Z` 형식으로 검사하며, 세 OS의 검사·빌드가 모두 성공해야 태그 릴리스를 공개합니다.
+
+macOS 패키지는 Intel 러너에서 체크섬으로 검증한 Python.org universal2 배포판을 사용합니다. 앱과 포함된 모든 Mach-O 파일의 Apple Silicon·Intel 슬라이스를 검사합니다. ARM 러너 대기에 의존하지 않지만, 아키텍처 검사와 Apple Silicon 실기 실행은 별개입니다. 패키지에는 Python이 포함되므로 사용자가 Python을 따로 설치할 필요는 없습니다.
 
 자세한 로컬 빌드와 서명 안내는 [BUILDING.md](BUILDING.md)를 참고하세요.
 
