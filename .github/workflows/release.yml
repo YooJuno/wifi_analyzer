@@ -1,0 +1,142 @@
+name: Build and release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Application version (for example, 1.2.0)
+        required: false
+        default: "0.0.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      WIFI_ANALYZER_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version || '0.0.0' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: linux-x86_64
+          - os: macos-15
+            artifact: macos-arm64
+          - os: windows-2025
+            artifact: windows-x86_64
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Validate package version
+        run: |
+          python - <<'PY'
+          import os, re
+          value = os.environ['WIFI_ANALYZER_VERSION']
+          if not re.fullmatch(r'v?\d+\.\d+\.\d+', value):
+              raise SystemExit('Version must be X.Y.Z or vX.Y.Z')
+          PY
+
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3-tk
+
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade --requirement requirements.txt --requirement requirements-build.txt
+
+      - name: Validate source
+        run: |
+          python -m compileall -q wifi_gui.py wifi_scan.py diagnostics.py wifi_core.py wifi_platform.py platforms
+          python -c "import tkinter, wifi_gui; print('GUI imports: OK')"
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Build standalone application
+        run: python -m PyInstaller --clean --noconfirm wifi_analyzer.spec
+
+      - name: Verify macOS bundle signature
+        if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict dist/WiFiAnalyzer.app
+
+      - name: Package Linux build
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release
+          tar -C dist -czf release/WiFiAnalyzer-linux-x86_64.tar.gz WiFiAnalyzer
+
+      - name: Package macOS build
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent dist/WiFiAnalyzer.app release/WiFiAnalyzer-macOS-arm64.zip
+
+      - name: Package Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path dist\WiFiAnalyzer -DestinationPath release\WiFiAnalyzer-Windows-x86_64.zip
+
+      - name: Write SHA-256 checksums
+        run: |
+          python - <<'PY'
+          import hashlib, pathlib
+          for path in pathlib.Path('release').iterdir():
+              if path.is_file() and not path.name.endswith('.sha256'):
+                  with path.open('rb') as source:
+                      digest = hashlib.file_digest(source, 'sha256').hexdigest()
+                  path.with_name(path.name + '.sha256').write_text(digest + '  ' + path.name + '\n', encoding='utf-8')
+          PY
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: WiFiAnalyzer-${{ matrix.artifact }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: WiFiAnalyzer-*
+          path: release
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/*
+

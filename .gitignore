@@ -22,9 +22,10 @@ env/
 .env.*
 !.env.example
 
-# Packaging / py2app output
+# Packaging and local application output
 /build/
 /dist/
+/release/
 *.egg-info/
 .eggs/
 /WiFiAnalyzer.app/

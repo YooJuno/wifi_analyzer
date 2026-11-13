@@ -1,1 +1,2 @@
 pyobjc-framework-CoreWLAN; platform_system == "Darwin"
+pyobjc-framework-CoreLocation; platform_system == "Darwin"

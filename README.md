@@ -1,83 +1,141 @@
-# Wi-Fi Analyzer
+# WiFi Analyzer
 
-주변 Wi-Fi AP의 채널 점유와 신호 세기를 보여주는 데스크톱 도구입니다. 하나의 GUI/CLI를
-공유하고, 스캔 구현만 운영체제별 모듈로 분리했습니다.
+Windows, macOS, Ubuntu에서 주변 Wi-Fi와 현재 연결 상태를 함께 분석하는 데스크톱
+진단 도구입니다. 단순히 AP 목록을 보여주는 대신 다음 질문에 답하도록 구성했습니다.
 
-## 플랫폼 구조
+- 현재 신호나 SNR이 실제로 나쁜가?
+- 같은 채널 경쟁 또는 부분 겹침이 있는가?
+- 신호가 시간에 따라 불안정한가?
+- Wi-Fi가 아니라 공유기, ISP, DNS 또는 HTTPS 구간의 문제인가?
+- 주변 관측 기준으로 어떤 채널이 상대적으로 여유로운가?
 
-| 플랫폼 | 스캔 모듈 | 데이터 소스 | 실행 도구 |
-| --- | --- | --- | --- |
-| macOS | `platforms/macos.py` | CoreWLAN, `system_profiler` 대체 | `run_gui.command` |
-| Ubuntu/Linux | `platforms/linux.py` | NetworkManager `nmcli` | `run_gui.sh` |
-| Windows | `platforms/windows.py` | `netsh wlan` | `run_gui.bat` |
+## 주요 화면
 
-공통 모델, 채널 점유 계산, AP 행 식별자는 `wifi_core.py`에 있고, 실행 시
-`wifi_platform.py`가 OS를 감지해 알맞은 수집기를 선택합니다. GUI와 CLI를 바꿀 때는
-플랫폼 코드를 건드릴 필요가 없습니다. OS별 수집기 변경은 해당 `platforms/` 파일에만
-반영합니다.
+- **개요**: 현재 연결, RSSI, SNR, 링크 속도, 자동 진단 근거와 권장 조치
+- **네트워크**: SSID/BSSID, 대역, 채널 폭, RSSI/SNR, BSS Load, PHY, 보안
+- **채널 분석**: 2.4/5/6GHz 점유 지도와 후보 채널의 상대 RF 압력
+- **시간 추이**: 선택한 BSS의 RSSI와 noise 변화
+- **경로 진단**: 게이트웨이, 외부 IP, DNS, HTTPS를 분리 검사
+- **리포트 저장**: 연결·관측·진단·추천·경로 검사 결과를 JSON으로 저장
 
-## Ubuntu 설치와 실행
+채널 곡선과 RF 압력은 주변 BSS 신호로 계산한 **상대 비교값**입니다. 실제 스펙트럼,
+airtime, 재전송률 또는 비 Wi-Fi 간섭을 직접 측정한 값은 아닙니다.
 
-Ubuntu Desktop에서 NetworkManager와 Tk를 설치합니다.
+## 플랫폼별 수집
+
+| 플랫폼 | 데이터 소스 | 비고 |
+| --- | --- | --- |
+| macOS | CoreWLAN, `system_profiler` fallback | RSSI/noise, 폭, PHY, 보안, 일부 BSS Load |
+| Ubuntu/Linux | NetworkManager `nmcli` | 폭과 noise는 환경에 따라 미제공 |
+| Windows | `netsh wlan` | 폭과 noise는 기본 명령에서 미제공 |
+
+## 소스에서 실행
+
+Python 3.12를 권장합니다.
+
+macOS와 Ubuntu/Linux:
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 wifi_gui.py
+```
+
+Windows PowerShell 또는 명령 프롬프트:
+
+```powershell
+py -3 -m pip install -r requirements.txt
+py -3 wifi_gui.py
+```
+
+운영체제별 실행 스크립트도 제공합니다.
+
+```bash
+# macOS
+./run_gui.command
+
+# Ubuntu
+./run_gui.sh
+
+# Windows
+run_gui.bat
+```
+
+실행 스크립트는 저장소의 Python 소스를 직접 실행하므로 fresh clone에서도 사용할 수
+있습니다. 먼저 위의 운영체제별 설치 명령으로 의존성을 설치하세요.
+
+Ubuntu Desktop에서는 NetworkManager와 Tk가 필요합니다.
 
 ```bash
 sudo apt update
 sudo apt install network-manager python3-tk
-python3 -m pip install -r requirements.txt
-chmod +x run_gui.sh
-./run_gui.sh
 ```
 
-터미널 모니터는 다음과 같이 실행합니다.
+터미널 진단:
 
 ```bash
-python3 wifi_scan.py
 python3 wifi_scan.py --once
+python3 wifi_scan.py --once --path
+python3 wifi_scan.py --interval 15
 ```
 
-`nmcli`는 스캔할 네트워크 인터페이스에 NetworkManager가 연결되어 있어야 합니다.
-Linux와 Windows가 제공하는 스캔 정보에는 채널 폭과 noise가 없을 수 있으므로, 해당 경우
-분석기는 20 MHz 폭으로 표시하고 SNR은 비워 둡니다.
+macOS 14 이상에서 SSID/BSSID가 가려지면 **시스템 설정 → 개인정보 보호 및 보안 →
+위치 서비스**에서 WiFi Analyzer 또는 실행한 터미널 앱의 위치 접근을 허용하세요.
 
-기본 GUI는 **진단 AP만** 표시합니다. 현재 연결 AP와 실제 주파수가 겹치면서 현재 신호보다
-15 dB 이내인 AP만 목록과 그래프에 남습니다. 숨김 SSID는 기본적으로 요약 수치에만 반영되고,
-필요할 때만 **숨김 SSID** 토글로 펼칠 수 있습니다. `C/I`는 현재 연결 신호와 겹치는 AP의
-합산 신호를 비교한 추정치이며, `높음` 또는 `심각`은 간섭 가능성을 뜻합니다. 실제 속도 문제는
-인터넷 회선, AP 부하, 클라이언트 상태도 함께 확인해야 합니다.
+## 프로젝트 구조
 
-## macOS 설치와 실행
+```text
+wifi_gui.py            진단 중심 Tkinter GUI
+wifi_scan.py           터미널 진단
+diagnostics.py         RF·신호·채널 추천·경로 판정
+wifi_core.py           공통 모델과 주파수 계산
+wifi_platform.py       실행 OS에 맞는 backend 선택
+platforms/
+  macos.py             CoreWLAN / system_profiler
+  linux.py             nmcli
+  windows.py           netsh
+tests/                 파서·계산·진단 단위 테스트
+```
+
+## 테스트
 
 ```bash
-python3 -m pip install -r requirements.txt
-open WiFiAnalyzer.app
+python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-`pyobjc-framework-CoreWLAN`이 설치되면 BSSID를 포함한 CoreWLAN 스캔을 사용합니다.
-없으면 `system_profiler` 대체 경로를 사용합니다. macOS 14 이상에서는 Wi-Fi 목록을 위해
-WiFi Analyzer의 위치 접근을 허용해야 할 수 있습니다.
+`main` 브랜치의 push와 pull request에서는 GitHub Actions가 Ubuntu, macOS, Windows에서
+컴파일 및 단위 테스트를 실행합니다.
 
-macOS 앱 번들은 기존과 같이 만들 수 있습니다.
+## 빌드와 자동 배포
+
+독립 실행형 패키지는 PyInstaller로 만듭니다.
 
 ```bash
-python3 -m pip install py2app
-python3 setup.py py2app
-open "dist/WiFi Analyzer.app"
+python3 -m pip install -r requirements.txt -r requirements-build.txt
+WIFI_ANALYZER_VERSION=1.0.0 python3 -m PyInstaller --clean --noconfirm wifi_analyzer.spec
 ```
 
-## Windows 설치와 실행
+Windows용 로컬 빌드 명령과 버전 설정 방법은 [BUILDING.md](BUILDING.md)에 있습니다.
 
-Python 3와 Tk가 포함된 Windows 환경에서 다음을 실행합니다.
-
-```bat
-python -m pip install -r requirements.txt
-run_gui.bat
-```
-
-Windows는 기본 제공 `netsh wlan`을 사용합니다. WLAN AutoConfig 서비스와 무선 어댑터가
-활성화되어 있어야 합니다.
-
-## 검증
+GitHub Actions의 **Build and release**를 수동 실행하면 입력한 버전으로 세 운영체제의
+artifact를 생성합니다. `v*` 태그를 push하면 태그 버전이 앱 메타데이터에 반영되고,
+테스트와 빌드 후 GitHub Release가 자동 생성됩니다.
 
 ```bash
-python3 -m unittest discover -s tests -v
+git tag v1.0.0
+git push origin v1.0.0
 ```
+
+생성 파일:
+
+- Ubuntu x86_64: `WiFiAnalyzer-linux-x86_64.tar.gz`
+- macOS arm64: `WiFiAnalyzer-macOS-arm64.zip`
+- Windows x86_64: `WiFiAnalyzer-Windows-x86_64.zip`
+
+각 압축 파일과 함께 SHA-256 파일(`.sha256`)을 제공합니다. 수동 실행의 버전은 `X.Y.Z`, 릴리스 태그는 `vX.Y.Z` 형식으로 검사하며, 세 OS의 검사·빌드가 모두 성공해야 태그 릴리스를 공개합니다.
+
+자세한 로컬 빌드와 서명 안내는 [BUILDING.md](BUILDING.md)를 참고하세요.
+
+GitHub Actions에서 생성하는 macOS 앱은 ad-hoc 서명, Windows 실행 파일은 무서명
+상태입니다. 따라서 공개 배포본을 처음 실행할 때 macOS Gatekeeper 또는 Windows
+SmartScreen 경고가 나타날 수 있습니다. 경고 없는 공개 배포에는 각 플랫폼의 코드
+서명 인증서와 macOS notarization이 추가로 필요합니다.

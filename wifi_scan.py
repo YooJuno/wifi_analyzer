@@ -1,111 +1,149 @@
 #!/usr/bin/env python3
-"""Real-time Wi-Fi channel interference monitor.
+"""Cross-platform terminal Wi-Fi diagnostics."""
 
-같은 채널 또는 겹치는 채널을 쓰는 AP들이 서로 얼마나 간섭하는지 보여준다.
-
-사용법:
-  python3 wifi_scan.py                 5초 주기
-  python3 wifi_scan.py -i 2            2초 주기
-  python3 wifi_scan.py --once          한 번만 출력
-"""
+from __future__ import annotations
 
 import argparse
 import sys
 import time
 
-from wifi_core import interference_level, interference_margin_db, relevant_interferers
-from wifi_platform import platform_label, scan_source, scan_wifi
+from diagnostics import analyze_connection, recommend_channels, run_path_diagnostics
+from wifi_core import AP, assign_keys
+from wifi_platform import platform_label, scan_snapshot
 
-def render(aps, source, elapsed):
-    lines = []
-    now = time.strftime("%H:%M:%S")
-    lines.append(f"\033[1m실시간 Wi-Fi 채널 간섭 모니터\033[0m   {now}   "
-                 f"AP {len(aps)}개   source={source}   ({elapsed:.1f}s)")
-    lines.append("")
 
-    cur = next((a for a in aps if a.cur), None)
-    if cur:
-        snr = cur.rssi - cur.noise if cur.noise is not None else None
-        mark = "양호" if snr is not None and snr >= 25 else ("주의" if snr is not None and snr >= 15 else "미측정")
-        b = f"  {cur.bssid}" if cur.bssid else ""
-        lines.append(f"현재 접속  {cur.ssid}{b}")
-        measurement = (f"noise {cur.noise}dBm   SNR {snr}dB" if snr is not None
-                       else "noise/SNR 미제공")
-        lines.append(f"           ch{cur.ch} ({cur.band}GHz, {cur.width}MHz)   "
-                     f"{cur.rssi}dBm / {measurement}  [{mark}]")
-        lines.append("")
+COLORS = {
+    "critical": "\033[31m", "warning": "\033[33m", "info": "\033[36m",
+    "ok": "\033[32m", "unknown": "\033[2m",
+}
+RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 
-    # Focus on interferers that are close enough in signal strength to matter.
-    if cur:
-        rivals = relevant_interferers(cur, aps)
 
-        co = [a for ov, a in rivals if a.ch == cur.ch]
-        adj = [a for ov, a in rivals if a.ch != cur.ch]
-        margin = interference_margin_db(cur, rivals)
-        level = interference_level(margin)
-        hidden = [a for _, a in rivals if not a.ssid]
-        named = [(ov, a) for ov, a in rivals if a.ssid]
+def _current_ap(snapshot):
+    connection = snapshot.connection
+    current = None
+    if connection.bssid:
+        wanted = connection.bssid.lower().replace("-", ":")
+        current = next((ap for ap in snapshot.aps
+                        if (ap.bssid or "").lower().replace("-", ":") == wanted), None)
+    current = current or next((ap for ap in snapshot.aps if ap.cur), None)
+    if current is None and connection.connected and connection.channel and connection.band:
+        current = AP(connection.ssid, connection.bssid, connection.channel,
+                     connection.width or 20, connection.band,
+                     connection.rssi if connection.rssi is not None else -99,
+                     connection.noise, connection.security, connection.phy, True,
+                     width_known=connection.width is not None)
+        snapshot.aps.append(current)
+    if current:
+        current.cur = True
+        current.rssi = connection.rssi if connection.rssi is not None else current.rssi
+        current.noise = connection.noise if connection.noise is not None else current.noise
+        current.width = connection.width or current.width
+        current.ch = connection.channel or current.ch
+        current.band = connection.band or current.band
+        current.phy = connection.phy or current.phy
+        current.sec = connection.security or current.sec
+    return current
 
-        lines.append(f"\033[1m현재 연결 간섭 진단: {level}\033[0m   "
-                     f"동일채널 {len(co)}대 · 부분겹침 {len(adj)}대 · "
-                     + (f"추정 C/I {margin:+.0f}dB" if margin is not None else "유효 간섭원 없음"))
-        if not rivals:
-            lines.append("  현재 연결 신호보다 15dB 이내에서 겹치는 AP가 없습니다.")
-        for ov, a in named[:6]:
-            kind = "동일채널" if a.ch == cur.ch else f"겹침{ov:>3}MHz"
-            b = f"  {a.bssid}" if a.bssid else ""
-            lines.append(f"  {a.rssi:>4}dBm  ch{a.ch:<4}{a.width:>3}MHz  {kind}   "
-                         f"{a.ssid[:28]:<28}{b}")
-        if hidden:
-            strongest = max(ap.rssi for ap in hidden)
-            lines.append(f"  숨김 SSID {len(hidden)}대는 요약됨 (최강 신호 {strongest}dBm)")
-        if len(named) > 6:
-            lines.append(f"  이름 있는 AP {len(named) - 6}대는 신호가 더 약해 요약됨")
-    lines.append("")
-    lines.append("\033[2mCtrl+C 종료\033[0m")
+
+def render(snapshot, elapsed, path_result=None):
+    aps = assign_keys(snapshot.aps)
+    current = _current_ap(snapshot)
+    now = time.strftime("%H:%M:%S", time.localtime(snapshot.timestamp))
+    lines = [
+        f"{BOLD}WiFi Analyzer · 진단 요약{RESET}",
+        f"{platform_label()} · {snapshot.source} · {now} · BSS {len(aps)}개 · {elapsed:.1f}초",
+        "",
+    ]
+
+    if current:
+        connection = snapshot.connection
+        snr = current.snr or None
+        rate = f"{connection.tx_rate:.0f} Mbps" if connection.tx_rate else "미제공"
+        width = f"{current.width} MHz" if current.width_known else "폭 미제공"
+        lines.extend([
+            f"{BOLD}현재 연결{RESET}  {current.ssid or '(숨김 SSID)'}",
+            f"  {current.bssid or 'BSSID 미제공'}",
+            f"  {current.band} GHz · ch{current.ch} · {width} · "
+            f"{current.rssi} dBm · SNR {snr if snr is not None else '–'} dB",
+            f"  PHY {connection.phy or current.phy or '–'} · Tx rate {rate} · "
+            f"보안 {connection.security or current.sec or '–'}",
+            "",
+        ])
+    else:
+        lines.extend([f"{COLORS['critical']}현재 Wi-Fi 연결을 찾지 못했습니다.{RESET}", ""])
+
+    findings = analyze_connection(current, aps, source_reliable=not snapshot.warnings)
+    lines.append(f"{BOLD}자동 진단{RESET}")
+    for finding in findings:
+        color = COLORS.get(finding.severity, "")
+        lines.append(f"  {color}● {finding.title}{RESET} — {finding.evidence}")
+        lines.append(f"    조치: {finding.action}")
+
+    if current:
+        width = 20 if current.band == 2 else (80 if current.width >= 80 else 20)
+        candidates = recommend_channels(aps, current.band, width)[:3]
+        if candidates:
+            lines.extend(["", f"{BOLD}상대적으로 여유로운 채널{RESET}"])
+            for score in candidates:
+                pressure = ("겹침 없음" if score.pressure_dbm is None
+                            else f"추정 압력 {score.pressure_dbm:.0f} dBm")
+                dfs = " · DFS" if score.dfs else ""
+                lines.append(
+                    f"  {score.band} GHz ch{score.channel}/{score.width} MHz · "
+                    f"{pressure} · 신뢰도 {score.confidence}{dfs}")
+            lines.append(f"  {DIM}주변 BSS 신호 기반 비교이며 실제 airtime 측정값이 아닙니다.{RESET}")
+
+    if snapshot.warnings:
+        lines.extend(["", f"{COLORS['warning']}데이터 제한: "
+                      + " · ".join(snapshot.warnings) + RESET])
+
+    if path_result:
+        lines.extend(["", f"{BOLD}경로 진단{RESET}"])
+        for check in path_result.checks:
+            color = COLORS.get(check.status, "")
+            latency = f"{check.latency_ms:.1f} ms" if check.latency_ms is not None else "–"
+            lines.append(f"  {color}● {check.stage:<8}{RESET} {check.target:<24} "
+                         f"{latency:<10} {check.detail}")
+        color = COLORS.get(path_result.severity, "")
+        lines.append(f"  {color}{path_result.conclusion}{RESET}")
+
+    lines.extend(["", f"{DIM}Ctrl+C 종료{RESET}"])
     return "\n".join(lines)
 
 
 def main():
-    p = argparse.ArgumentParser(description="실시간 Wi-Fi 채널 간섭 모니터")
-    p.add_argument("-i", "--interval", type=float, default=5.0, help="갱신 주기(초), 기본 5")
-    p.add_argument("--once", action="store_true", help="한 번만 출력")
-    args = p.parse_args()
-
-    scan, source = scan_wifi, scan_source()
-    source = f"{platform_label()} {source}"
-
-    warned = False
+    parser = argparse.ArgumentParser(description="크로스플랫폼 Wi-Fi 문제 진단")
+    parser.add_argument("-i", "--interval", type=float, default=10.0,
+                        help="주변 BSS 스캔 주기(초), 기본 10")
+    parser.add_argument("--once", action="store_true", help="한 번만 출력")
+    parser.add_argument("--path", action="store_true",
+                        help="게이트웨이·인터넷·DNS·HTTPS 경로 진단도 실행")
+    args = parser.parse_args()
+    path_result = None
     try:
         while True:
-            t0 = time.time()
+            started = time.monotonic()
             try:
-                aps = scan()
-            except Exception as e:
-                print(f"스캔 실패: {e}", file=sys.stderr)
+                snapshot = scan_snapshot()
+                if args.path and (path_result is None or args.once):
+                    path_result = run_path_diagnostics()
+            except Exception as exc:
+                print(f"스캔 실패: {exc}", file=sys.stderr)
                 if args.once:
                     return 1
-                time.sleep(args.interval)
+                time.sleep(max(1.0, args.interval))
                 continue
-
-            out = render(aps, source, time.time() - t0)
             if not args.once:
                 sys.stdout.write("\033[H\033[J")
-            print(out)
-
-            if not warned and platform_label() == "macOS" and any(
-                    (a.ssid or "").startswith("<redacted") for a in aps):
-                print("\n\033[33mSSID가 가려져 있습니다. 시스템 설정 → 개인정보 보호 및 보안"
-                      " → 위치 서비스 에서 터미널을 켜세요.\033[0m")
-                warned = True
-
+            print(render(snapshot, time.monotonic() - started, path_result))
             if args.once:
                 return 0
-            time.sleep(max(0.5, args.interval - (time.time() - t0)))
+            time.sleep(max(5.0, args.interval - (time.monotonic() - started)))
     except KeyboardInterrupt:
         print()
         return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

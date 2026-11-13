@@ -20,6 +20,16 @@ def scan_wifi():
     return _backend().scan()
 
 
+def scan_snapshot():
+    """Return BSS observations plus current-link details when available."""
+    backend = _backend()
+    get_snapshot = getattr(backend, "snapshot", None)
+    if get_snapshot:
+        return get_snapshot()
+    from wifi_core import ScanSnapshot
+    return ScanSnapshot(backend.scan(), source=scan_source())
+
+
 def scan_source():
     backend = _backend()
     source = getattr(backend, "source", None)
