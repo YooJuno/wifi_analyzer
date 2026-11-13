@@ -58,7 +58,7 @@ executable = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch="universal2" if sys.platform == "darwin" and os.environ.get("WIFI_MAC_UNIVERSAL") == "1" else None,
     codesign_identity=None,
     entitlements_file=None,
 )

@@ -78,6 +78,16 @@ class FindingTests(unittest.TestCase):
         findings = diagnose_connection(current, [current])
         self.assertEqual([finding.code for finding in findings], ["rf_ok"])
 
+    def test_overlap_advice_matches_five_and_six_ghz(self):
+        for band, channel, start, end in [(5, 36, 5170, 5250), (6, 5, 5945, 6025)]:
+            with self.subTest(band=band):
+                current = ap('current', channel, 80, band, -62, start, end)
+                rival = ap('rival', channel + 4, 40, band, -56, start + 20, end - 20)
+                finding = next(item for item in diagnose_connection(current, [current, rival])
+                               if item.code == 'adjacent_overlap')
+                self.assertNotIn('1/6/11', finding.action)
+                self.assertIn(f'{band}GHz', finding.action)
+
 
 class PathTests(unittest.TestCase):
     def test_ping_parser_reads_unix_summary(self):

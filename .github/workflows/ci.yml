@@ -26,8 +26,8 @@ jobs:
         include:
           - name: Ubuntu x86_64
             os: ubuntu-24.04
-          - name: macOS arm64
-            os: macos-15
+          - name: macOS Intel
+            os: macos-15-intel
           - name: Windows x86_64
             os: windows-2025
 
