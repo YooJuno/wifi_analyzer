@@ -33,7 +33,7 @@ analysis = Analysis(
     ["wifi_gui.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[("assets/wifi-analyzer.png", "assets")],
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
@@ -61,6 +61,8 @@ executable = EXE(
     target_arch="universal2" if sys.platform == "darwin" and os.environ.get("WIFI_MAC_UNIVERSAL") == "1" else None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="assets/wifi-analyzer.ico" if sys.platform == "win32" else None,
+    manifest="assets/windows.manifest" if sys.platform == "win32" else None,
 )
 
 bundle_contents = COLLECT(
@@ -77,7 +79,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         bundle_contents,
         name="WiFiAnalyzer.app",
-        icon=None,
+        icon="assets/wifi-analyzer.icns",
         bundle_identifier="com.juno.wifi-analyzer",
         info_plist={
             "CFBundleDisplayName": "WiFi Analyzer",

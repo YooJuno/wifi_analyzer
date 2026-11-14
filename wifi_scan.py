@@ -32,11 +32,12 @@ def _current_ap(snapshot):
                      connection.width or 20, connection.band,
                      connection.rssi if connection.rssi is not None else -99,
                      connection.noise, connection.security, connection.phy, True,
-                     width_known=connection.width is not None)
+                     width_known=connection.width is not None, rssi_estimated=connection.rssi_estimated)
         snapshot.aps.append(current)
     if current:
         current.cur = True
         current.rssi = connection.rssi if connection.rssi is not None else current.rssi
+        current.rssi_estimated = connection.rssi_estimated if connection.rssi is not None else current.rssi_estimated
         current.noise = connection.noise if connection.noise is not None else current.noise
         current.width = connection.width or current.width
         current.ch = connection.channel or current.ch
@@ -58,22 +59,28 @@ def render(snapshot, elapsed, path_result=None):
 
     if current:
         connection = snapshot.connection
-        snr = current.snr or None
+        snr = current.snr if current.noise is not None and current.noise < 0 else None
         rate = f"{connection.tx_rate:.0f} Mbps" if connection.tx_rate else "미제공"
         width = f"{current.width} MHz" if current.width_known else "폭 미제공"
+        signal_prefix = "≈" if current.rssi_estimated else ""
         lines.extend([
             f"{BOLD}현재 연결{RESET}  {current.ssid or '(숨김 SSID)'}",
             f"  {current.bssid or 'BSSID 미제공'}",
             f"  {current.band} GHz · ch{current.ch} · {width} · "
-            f"{current.rssi} dBm · SNR {snr if snr is not None else '–'} dB",
+            f"{signal_prefix}{current.rssi} dBm · SNR {snr if snr is not None else '–'} dB",
             f"  PHY {connection.phy or current.phy or '–'} · Tx rate {rate} · "
             f"보안 {connection.security or current.sec or '–'}",
             "",
         ])
+    elif snapshot.connection.connected:
+        connection = snapshot.connection
+        prefix = "≈" if connection.rssi_estimated else ""
+        signal = f"{prefix}{connection.rssi} dBm" if connection.rssi is not None else "RSSI 미제공"
+        lines.extend([f"현재 Wi-Fi 연결: {connection.ssid or 'SSID 미제공'} · {signal} · 채널 정보 미제공", ""])
     else:
         lines.extend([f"{COLORS['critical']}현재 Wi-Fi 연결을 찾지 못했습니다.{RESET}", ""])
 
-    findings = analyze_connection(current, aps, source_reliable=not snapshot.warnings)
+    findings = analyze_connection(current, aps, source_reliable=not snapshot.warnings, connected=snapshot.connection.connected)
     lines.append(f"{BOLD}자동 진단{RESET}")
     for finding in findings:
         color = COLORS.get(finding.severity, "")
@@ -81,8 +88,8 @@ def render(snapshot, elapsed, path_result=None):
         lines.append(f"    조치: {finding.action}")
 
     if current:
-        width = 20 if current.band == 2 else (80 if current.width >= 80 else 20)
-        candidates = recommend_channels(aps, current.band, width)[:3]
+        width = 20 if current.band == 2 or not current.width_known else current.width
+        candidates = recommend_channels(aps, current.band, width, exclude=current)[:3]
         if candidates:
             lines.extend(["", f"{BOLD}상대적으로 여유로운 채널{RESET}"])
             for score in candidates:

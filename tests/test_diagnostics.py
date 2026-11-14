@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from diagnostics import (PathCheck, _path_conclusion, assess_rssi, assess_snr,
                          candidate_range, classify_relation, default_channel_candidates,
                          diagnose_connection, dns_check, evaluate_channels, https_check, ping_check,
-                         potential_rf_pressure_dbm)
+                         potential_rf_pressure_dbm, run_path_diagnostics)
 
 
 def ap(ssid, channel, width, band, rssi, start, end, noise=-90, sec="WPA2"):
@@ -60,6 +60,26 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(default_channel_candidates(6, 160),
                          [5, 37, 69, 101, 133, 165, 197])
 
+    def test_five_ghz_wide_channels_have_complete_candidates(self):
+        for width, count in ((40, 12), (160, 2)):
+            with self.subTest(width=width):
+                scores = evaluate_channels([], 5, width)
+                self.assertEqual(len(scores), count)
+                self.assertTrue(all(candidate_range(5, item.channel, width)[1] -
+                                    candidate_range(5, item.channel, width)[0] == width
+                                    for item in scores))
+
+    def test_channel_change_comparison_excludes_own_ap_but_keeps_neighbors(self):
+        current = ap("office", 149, 80, 5, -45, 5735, 5815)
+        neighbor = ap("office", 149, 80, 5, -70, 5735, 5815)
+        scores = evaluate_channels([current], 5, 80, exclude=current)
+        self.assertTrue(all(item.pressure_dbm is None for item in scores))
+        self.assertEqual([item.channel for item in scores[:2]], [149, 36])
+        crowded = next(item for item in evaluate_channels(
+            [current, neighbor], 5, 80, exclude=current) if item.channel == 149)
+        self.assertAlmostEqual(crowded.pressure_dbm, -70)
+        self.assertEqual(crowded.overlapping_bss, 1)
+
 
 class FindingTests(unittest.TestCase):
     def test_connection_diagnosis_produces_evidence_and_action(self):
@@ -90,6 +110,21 @@ class FindingTests(unittest.TestCase):
 
 
 class PathTests(unittest.TestCase):
+    def test_path_stages_run_concurrently_and_keep_display_order(self):
+        barrier = threading.Barrier(4, timeout=3)
+
+        def check(stage, target):
+            barrier.wait()
+            return PathCheck(stage, "ok", target, latency_ms=1)
+
+        with patch("diagnostics.ping_check", side_effect=check), \
+                patch("diagnostics.dns_check", side_effect=lambda host: check("dns", host)), \
+                patch("diagnostics.https_check", side_effect=lambda url: check("https", url)):
+            result = run_path_diagnostics(gateway="192.0.2.1")
+        self.assertEqual([item.stage for item in result.checks],
+                         ["gateway", "internet", "dns", "https"])
+        self.assertEqual(result.severity, "ok")
+
     def test_ping_parser_reads_unix_summary(self):
         output = ("4 packets transmitted, 4 packets received, 0.0% packet loss\n"
                   "round-trip min/avg/max/stddev = 1.000/2.500/4.000/0.5 ms\n")

@@ -132,7 +132,7 @@ class WifiCoreTests(unittest.TestCase):
 """
         with patch.object(windows.subprocess, "run", return_value=SimpleNamespace(
                 returncode=0, stdout=output, stderr="")):
-            aps = windows.scan()
+            aps = windows._netsh_snapshot().aps
         self.assertEqual([ap.bssid for ap in aps], ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"])
         self.assertEqual([ap.rssi for ap in aps], [-60, -70])
 
