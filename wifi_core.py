@@ -26,6 +26,22 @@ def channel_to_frequency(channel, band=None):
     return 2407 + 5 * channel if band == 2 or (band is None and channel <= 14) else 5000 + 5 * channel
 
 
+def frequency_to_channel(frequency):
+    """Return (band, primary channel) from MHz, without confusing 6 GHz ch 5."""
+    frequency = int(frequency)
+    if frequency == 2484:
+        return 2, 14
+    if 2412 <= frequency <= 2472:
+        return 2, (frequency - 2407) // 5
+    if frequency == 5935:
+        return 6, 2
+    if 5955 <= frequency <= 7115:
+        return 6, (frequency - 5950) // 5
+    if 5000 < frequency < 5900:
+        return 5, (frequency - 5000) // 5
+    return None, None
+
+
 def occupied_range(channel, width, band=None):
     """Return the occupied frequency range in MHz."""
     if band == 2 or (band is None and channel <= 14):
@@ -91,12 +107,12 @@ def interference_level(margin):
 class AP:
     __slots__ = ("ssid", "bssid", "ch", "width", "band", "rssi", "noise",
                  "sec", "phy", "cur", "frequency", "key", "channel_utilization",
-                 "station_count", "secondary_offset", "width_known", "observed_at")
+                 "station_count", "secondary_offset", "width_known", "observed_at", "rssi_estimated")
 
     def __init__(self, ssid, bssid, ch, width, band, rssi, noise,
                  sec="", phy="", cur=False, frequency=None, channel_utilization=None,
                  station_count=None, secondary_offset=None, width_known=True,
-                 observed_at=None):
+                 observed_at=None, rssi_estimated=False):
         self.ssid = ssid
         self.bssid = bssid
         self.ch, self.width, self.band = ch, width, band
@@ -108,6 +124,7 @@ class AP:
         self.secondary_offset = secondary_offset
         self.width_known = width_known
         self.observed_at = observed_at or time.time()
+        self.rssi_estimated = rssi_estimated
         self.key = bssid or f"{ssid}|{band}|{ch}|{width}"
 
     @property
@@ -180,10 +197,11 @@ class ConnectionInfo:
     phy: str = ""
     security: str = ""
     interface: str = ""
+    rssi_estimated: bool = False
 
     @property
     def snr(self):
-        if self.rssi is None or self.noise is None:
+        if self.rssi is None or self.noise is None or self.noise >= 0:
             return None
         return self.rssi - self.noise
 

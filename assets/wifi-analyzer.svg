@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>WiFi Analyzer</title>
+  <rect x="88" y="88" width="848" height="848" rx="190" fill="#233649"/>
+  <g fill="none" stroke="#e8f0f7" stroke-width="46" stroke-linecap="round">
+  <path d="M 243.88 510.02 A 350 350 0 0 1 780.12 510.02"/>
+  <path d="M 331.98 583.94 A 235 235 0 0 1 692.02 583.94"/>
+  <path d="M 420.07 657.87 A 120 120 0 0 1 603.93 657.87"/>
+  </g>
+  <circle cx="512" cy="735" r="28" fill="#e8f0f7"/>
+</svg>

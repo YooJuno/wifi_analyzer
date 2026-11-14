@@ -1,9 +1,12 @@
 name: Continuous integration
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+      - dev
+      - 'codex/**'
   pull_request:
     branches:
       - main
@@ -14,6 +17,9 @@ permissions:
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  PYTHONUTF8: '1'
 
 jobs:
   test:
@@ -46,13 +52,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes python3-tk
+          sudo apt-get install --yes python3-tk xvfb xauth fonts-noto-cjk
 
       - name: Install runtime dependencies
         run: python -m pip install --upgrade --requirement requirements.txt
 
       - name: Compile Python sources
-        run: python -m compileall -q wifi_gui.py wifi_scan.py diagnostics.py wifi_core.py wifi_platform.py platforms tests
+        run: python -m compileall -q wifi_gui.py wifi_scan.py diagnostics.py measurement_log.py wifi_core.py wifi_platform.py platforms tests tools
 
       - name: Smoke-test GUI imports
         run: |
@@ -60,3 +66,7 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Verify GUI and logs without Wi-Fi access
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python tools/verify_gui.py

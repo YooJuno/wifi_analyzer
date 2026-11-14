@@ -25,7 +25,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Optional, Sequence
+from platforms.commands import run_command
 
 
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2, "ok": 3, "unknown": 4}
@@ -154,6 +156,9 @@ def classify_relation(target: Any, other: Any) -> RFRelation:
     """Separate primary-channel contention, bonded-block sharing and overlap."""
     if target is other or _band(target) != _band(other):
         return RFRelation("none", 0.0, 0.0, 0.0, other)
+    if (_attribute(target, "width_known", default=True) is False or
+            _attribute(other, "width_known", default=True) is False) and _channel(target) != _channel(other):
+        return RFRelation("none", 0.0, 0.0, 0.0, other)
     target_range, other_range = _range(target), _range(other)
     overlap = overlap_mhz(target_range, other_range)
     if not overlap:
@@ -184,8 +189,17 @@ def potential_rf_pressure_dbm(target: Any, observations: Iterable[Any]) -> Optio
     result is useful for comparing channel candidates observed in the same
     scan, but must not be labelled channel utilisation or actual interference.
     """
+    observations = list(observations)
+    if _attribute(target, "width_known", default=True) is False or any(
+            other is not target and _band(other) == _band(target) and
+            _attribute(other, "width_known", default=True) is False for other in observations):
+        return None
+    return _pressure_from_relations(rf_relations(target, observations))
+
+
+def _pressure_from_relations(relations: Iterable[RFRelation]) -> Optional[float]:
     total_mw = 0.0
-    for relation in rf_relations(target, observations):
+    for relation in relations:
         rssi = _rssi(relation.other)
         if rssi is not None:
             total_mw += (10 ** (rssi / 10.0)) * relation.target_overlap_ratio
@@ -241,6 +255,8 @@ def default_channel_candidates(band: int, width: int) -> list[int]:
                 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161]
     if band == 5 and width == 80:
         return [36, 52, 100, 116, 132, 149]
+    if band == 5 and width in {40, 160}:
+        return [low for low, _high in _BLOCKS[width]]
     if band == 6 and width == 20:
         # Preferred Scanning Channels (PSC) reduce discovery delay.
         return list(range(5, 230, 16))
@@ -257,15 +273,19 @@ def default_channel_candidates(band: int, width: int) -> list[int]:
 
 
 def evaluate_channels(observations: Sequence[Any], band: int, width: int,
-                      candidates: Optional[Sequence[int]] = None) -> list[ChannelScore]:
+                      candidates: Optional[Sequence[int]] = None,
+                      *, exclude: Any = None) -> list[ChannelScore]:
     """Rank channel candidates using nearby BSS signal and spectral overlap."""
     channels = list(candidates) if candidates is not None else default_channel_candidates(band, width)
     scores = []
-    band_observations = [item for item in observations if _band(item) == band]
+    band_observations = [item for item in observations
+                         if item is not exclude and _band(item) == band]
+    if any(_attribute(item, "width_known", default=True) is False for item in band_observations):
+        return []
     for channel in channels:
         candidate = _Candidate(band, channel, width)
         relations = rf_relations(candidate, band_observations)
-        pressure = potential_rf_pressure_dbm(candidate, band_observations)
+        pressure = _pressure_from_relations(relations)
         strong = sum(1 for relation in relations if (_rssi(relation.other) or -200) >= -67)
         dfs = band == 5 and 52 <= channel <= 144
         confidence = "보통" if len(band_observations) >= 3 else "낮음"
@@ -276,12 +296,15 @@ def evaluate_channels(observations: Sequence[Any], band: int, width: int,
                       f"추정 RF 압력 {pressure:.0f} dBm")
         scores.append(ChannelScore(band, channel, width, pressure, len(relations),
                                    strong, dfs, confidence, reason))
-    # None means quieter than every measured pressure; non-DFS wins equal scores.
+    # Preserve the current block on equal evidence; a channel change should
+    # have an observed benefit. Otherwise prefer a non-DFS candidate on ties.
+    current_range = _range(exclude) if exclude is not None and _band(exclude) == band else None
     return sorted(scores, key=lambda item: (
         item.pressure_dbm is not None,
         item.pressure_dbm if item.pressure_dbm is not None else -999.0,
         item.strong_bss,
         item.overlapping_bss,
+        0 if candidate_range(band, item.channel, width) == current_range else 1,
         item.dfs,
     ))
 
@@ -299,9 +322,13 @@ def _snr_from(target: Any) -> Optional[float]:
 
 def diagnose_connection(current: Any, observations: Sequence[Any],
                         rssi_history: Optional[Sequence[Any]] = None,
-                        source_reliable: bool = True) -> list[Finding]:
+                        source_reliable: bool = True, *, connected: Optional[bool] = None) -> list[Finding]:
     """Generate evidence/action findings for the current Wi-Fi connection."""
     if current is None:
+        if connected:
+            return [Finding("connection_data_unavailable", "연결 정보 일부 미제공", "info",
+                            "Wi-Fi는 연결되어 있지만 연결된 BSS의 채널 정보를 확인하지 못했습니다.",
+                            "제공되는 연결 신호와 경로 검사 결과를 확인하세요.")]
         return [Finding("not_connected", "Wi-Fi 연결 없음", "critical",
                         "현재 연결된 BSS를 확인하지 못했습니다.",
                         "Wi-Fi 전원, 연결 상태와 스캔 권한을 확인하세요.")]
@@ -342,6 +369,12 @@ def diagnose_connection(current: Any, observations: Sequence[Any],
                                     "단말을 고정한 상태로 다시 측정해 환경 요인을 분리하세요."))
 
     relations = rf_relations(current, observations)
+    unknown_widths = sum(_band(item) == _band(current) and
+                         _attribute(item, "width_known", default=True) is False for item in observations)
+    if unknown_widths:
+        findings.append(Finding("channel_width_unavailable", "채널 겹침 판정 제한", "info",
+                                f"현재 대역 BSS {unknown_widths}개의 채널 폭 미제공",
+                                "같은 주채널의 경쟁 신호는 확인할 수 있습니다. 전체 겹침과 채널 추천은 폭 정보가 필요합니다."))
     audible = [relation for relation in relations
                if (_rssi(relation.other) or -200) >= max(-80, (rssi or -80) - 15)]
     contention = [relation for relation in audible
@@ -384,8 +417,8 @@ def diagnose_connection(current: Any, observations: Sequence[Any],
 
     if not source_reliable:
         findings.append(Finding("limited_scan_data", "진단 데이터 신뢰도 낮음", "info",
-                                "BSSID·폭·잡음 중 일부를 수집하지 못했습니다.",
-                                "운영체제 권한과 Wi-Fi 스캔 도구 설치 상태를 확인하세요."))
+                                "운영체제·드라이버가 일부 측정 항목을 제공하지 않습니다.",
+                                "제공되는 RSSI·동일 주채널 BSS와 경로 검사 결과를 함께 비교하세요."))
 
     if not findings:
         findings.append(Finding("rf_ok", "뚜렷한 Wi-Fi 무선 문제 없음", "ok",
@@ -396,19 +429,20 @@ def diagnose_connection(current: Any, observations: Sequence[Any],
 
 def analyze_connection(current: Any, observations: Sequence[Any],
                        history: Optional[Sequence[Any]] = None,
-                       source_reliable: bool = True) -> list[Finding]:
+                       source_reliable: bool = True, *, connected: Optional[bool] = None) -> list[Finding]:
     """Public UI-friendly alias for :func:`diagnose_connection`."""
-    return diagnose_connection(current, observations, history, source_reliable)
+    return diagnose_connection(current, observations, history, source_reliable, connected=connected)
 
 
 def recommend_channels(observations: Sequence[Any], band: int, width: int,
-                       candidates: Optional[Sequence[int]] = None) -> list[ChannelScore]:
+                       candidates: Optional[Sequence[int]] = None,
+                       *, exclude: Any = None) -> list[ChannelScore]:
     """Return quietest observed channel candidates first.
 
     The result is a relative recommendation from nearby BSS signals, not a
     measurement of non-Wi-Fi noise or actual channel airtime.
     """
-    return evaluate_channels(observations, band, width, candidates)
+    return evaluate_channels(observations, band, width, candidates, exclude=exclude)
 
 
 def default_gateway(system: Optional[str] = None) -> Optional[str]:
@@ -416,17 +450,15 @@ def default_gateway(system: Optional[str] = None) -> Optional[str]:
     system = (system or platform.system()).lower()
     try:
         if system == "darwin":
-            result = subprocess.run(["route", "-n", "get", "default"], capture_output=True,
-                                    text=True, timeout=3, check=False)
+            result = run_command(["route", "-n", "get", "default"], timeout=3, system=system)
             match = re.search(r"^\s*gateway:\s*(\S+)", result.stdout, re.MULTILINE)
         elif system == "windows":
-            result = subprocess.run(["route", "print", "-4", "0.0.0.0"], capture_output=True,
-                                    text=True, timeout=3, check=False)
+            result = run_command(["route", "print", "-4", "0.0.0.0"], timeout=3, system=system)
             match = re.search(r"^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+(?:\.\d+){3})",
                               result.stdout, re.MULTILINE)
         else:
-            result = subprocess.run(["ip", "route", "show", "default"], capture_output=True,
-                                    text=True, timeout=3, check=False)
+            result = run_command(["ip", "route", "show", "default"], timeout=3, system=system,
+                                 stable_locale=True)
             match = re.search(r"\bvia\s+(\d+(?:\.\d+){3})", result.stdout)
         return match.group(1) if match else None
     except (OSError, subprocess.SubprocessError):
@@ -440,17 +472,16 @@ def ping_check(stage: str, host: str, count: int = 4, timeout: float = 6.0,
                else ["ping", "-c", str(count), host])
     try:
         started = time.monotonic()
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
-                                check=False)
+        result = run_command(command, timeout=timeout, system=system, stable_locale=system != "windows")
         elapsed = (time.monotonic() - started) * 1000
         output = result.stdout + "\n" + result.stderr
         loss_match = re.search(r"([\d.]+)%\s*(?:packet )?loss", output, re.IGNORECASE)
         if not loss_match:  # Windows: Lost = 0 (0% loss)
-            loss_match = re.search(r"\(([\d.]+)%\s*loss\)", output, re.IGNORECASE)
+            loss_match = re.search(r"\(([\d.]+)%\s*(?:loss|손실)\)", output, re.IGNORECASE)
         loss = float(loss_match.group(1)) if loss_match else (0.0 if result.returncode == 0 else 100.0)
-        avg_match = re.search(r"(?:min/avg/max(?:/[\w]+)?\s*=\s*[\d.]+/|Average = )(\d+(?:\.\d+)?)",
+        avg_match = re.search(r"(?:min/avg/max(?:/[\w]+)?\s*=\s*[\d.]+/|(?:Average|평균)\s*=\s*)(\d+(?:\.\d+)?)",
                               output, re.IGNORECASE)
-        latency = float(avg_match.group(1)) if avg_match else elapsed / max(count, 1)
+        latency = float(avg_match.group(1)) if avg_match else None
         status = "ok" if result.returncode == 0 and loss == 0 else ("warning" if loss < 100 else "failed")
         return PathCheck(stage, status, host, latency, loss,
                          f"{count}회 ping · 손실 {loss:.0f}%")
@@ -586,14 +617,18 @@ def run_path_diagnostics(gateway: Optional[str] = None, external_ip: str = "1.1.
                          https_url: str = "https://example.com/") -> PathDiagnostics:
     """Explicitly run LAN/WAN/DNS/HTTPS checks; importing this module does no I/O."""
     gateway = gateway or default_gateway()
-    checks: list[PathCheck] = []
-    if gateway:
-        checks.append(ping_check("gateway", gateway))
-    else:
-        checks.append(PathCheck("gateway", "unknown", "-", detail="기본 게이트웨이를 찾지 못함"))
-    checks.append(ping_check("internet", external_ip))
-    checks.append(dns_check(dns_name))
-    checks.append(https_check(https_url))
+    # Each stage is independent. Preserve display order without making users
+    # wait for the sum of four network timeouts.
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="wifi-path") as executor:
+        gateway_check = executor.submit(ping_check, "gateway", gateway) if gateway else None
+        internet_check = executor.submit(ping_check, "internet", external_ip)
+        dns_result = executor.submit(dns_check, dns_name)
+        https_result = executor.submit(https_check, https_url)
+        checks = [
+            gateway_check.result() if gateway_check else PathCheck(
+                "gateway", "unknown", "-", detail="기본 게이트웨이를 찾지 못함"),
+            internet_check.result(), dns_result.result(), https_result.result(),
+        ]
     conclusion, severity = _path_conclusion(checks)
     return PathDiagnostics(time.time(), gateway, tuple(checks), conclusion, severity)
 

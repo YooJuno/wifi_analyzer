@@ -40,6 +40,8 @@ def main():
         app = App()
         try:
             app.geometry('1480x920+0+0')
+            app.attributes('-topmost', True)
+            app.lift()
             app.paused = True
             for sample in range(45):
                 snapshot_aps = copy.deepcopy(aps)
@@ -53,9 +55,11 @@ def main():
             for filename, tab in [
                 ('overview', app.overview_tab), ('networks', app.network_tab),
                 ('channels', app.channel_tab), ('history', app.history_tab),
+                ('path', app.path_tab),
             ]:
                 app.notebook.select(tab)
                 app.update()
+                app.update_idletasks()
                 bounds = (app.winfo_rootx(), app.winfo_rooty(),
                           app.winfo_rootx() + app.winfo_width(),
                           app.winfo_rooty() + app.winfo_height())

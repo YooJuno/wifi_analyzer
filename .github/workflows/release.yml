@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Application version (for example, 1.2.0)
+        description: Application version (for example, 1.1.0 or 1.1.0-rc.1)
         required: false
         default: "0.0.0"
   push:
@@ -17,6 +17,9 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  PYTHONUTF8: '1'
 
 jobs:
   build:
@@ -60,8 +63,8 @@ jobs:
           python - <<'PY'
           import os, re
           value = os.environ['WIFI_ANALYZER_VERSION']
-          if not re.fullmatch(r'v?\d+\.\d+\.\d+', value):
-              raise SystemExit('Version must be X.Y.Z or vX.Y.Z')
+          if not re.fullmatch(r'v?\d+\.\d+\.\d+(?:-rc\.[1-9]\d*)?', value):
+              raise SystemExit('Version must be X.Y.Z or X.Y.Z-rc.N, optionally prefixed with v')
           PY
 
       - name: Install Linux GUI build dependencies
@@ -75,7 +78,7 @@ jobs:
 
       - name: Validate source
         run: |
-          python -m compileall -q wifi_gui.py wifi_scan.py diagnostics.py wifi_core.py wifi_platform.py platforms
+          python -m compileall -q wifi_gui.py wifi_scan.py diagnostics.py measurement_log.py wifi_core.py wifi_platform.py platforms tests tools
           python -c "import tkinter, wifi_gui; print('GUI imports: OK')"
           python -m unittest discover -s tests -p "test_*.py" -v
 
@@ -83,6 +86,10 @@ jobs:
         env:
           WIFI_MAC_UNIVERSAL: ${{ runner.os == 'macOS' && '1' || '0' }}
         run: python -m PyInstaller --clean --noconfirm wifi_analyzer.spec
+
+      - name: Verify GUI and logs without Wi-Fi access
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python tools/verify_gui.py
 
       - name: Render GUI with synthetic networks without scanning
         if: runner.os == 'Linux'
@@ -161,6 +168,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ${{ contains(github.ref_name, '-') && '검증용 사전 배포본입니다. Windows/Linux의 실제 무선 장치·드라이버 최종 검증은 남아 있습니다.' || '' }}
+
+            포함 패키지: Windows x86_64, Ubuntu/Linux x86_64, macOS universal2 (Apple Silicon·Intel).
+            각 압축 파일과 함께 SHA-256 체크섬을 제공합니다.
+
+            macOS 앱은 ad-hoc 서명, Windows 실행 파일은 무서명입니다.
+            설치·측정 기능과 플랫폼별 수집 제약은 README.md, 최종 검증 절차는 BUILDING.md를 확인하세요.
           fail_on_unmatched_files: true
           files: release/*
 
